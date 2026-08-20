@@ -14,6 +14,7 @@ localStorage).
 | LIBRARY | sound.WAV (wavPRO) Songs/Library | drag-drop import, waveform render, automatic BPM + key analysis, on-device persistence across reloads |
 | GRID | Mimic Media Maker Sequencer/Grid | 8-voice × 16-step sequencer with a synthesized kit, swing, tempo sync to the loaded track, pattern inference from the track, beat-MIDI export |
 | KEYS | sound.WAV Interpolator + Notes | key/mode detection (Krumhansl–Schmuckler), scale notes with degrees, diatonic chords, named progressions — all auditionable, progression-MIDI export |
+| MIMIC | Mimic Media Maker's core promise + sound.WAV Interpolator | reads the selected track bar by bar — chords, drum hits, bassline, traced melody, energy arc — then re-performs it with synth voices into an instrumental near-dupe: rendered WAV drops into LIBRARY for A/B and EXPORT, plus multi-channel MIDI (bass/chords/lead/drums) |
 | LAYERS | sound.WAV Layers + Mimic Stems | 7-band frequency isolation (Sub → Air) on the live player with per-band gain/mute/solo, offline bounce of the current layer mix to WAV |
 | VIZ | Mimic Visualizer | spectrum / scope / orb modes driven by the master bus, clip recording (canvas + audio → webm) |
 | BRAIN | sound.WAV Brain/Brain Feed | tagged production notes and references, signature readout synthesized from the feed plus library analysis |
@@ -32,9 +33,10 @@ Cut deliberately — these diluted the studio tool:
   workflow it served.
 - **Video meeting client** (Halo, inside Hookcutter) — unrelated to music.
 - **ML stem separation** (Mimic) — the one real feature that cannot run in a
-  self-contained client. LAYERS' honest 7-band DSP covers most day-to-day use;
-  if true stem separation returns, it should be a small server endpoint feeding
-  BEAT BRAIN, not a separate app.
+  self-contained client. LAYERS' honest 7-band DSP and MIMIC's re-performance
+  engine cover the recreate-and-isolate workflows; if true stem separation
+  returns, it should be a small server endpoint feeding BEAT BRAIN, not a
+  separate app.
 
 ## The suite
 

@@ -168,6 +168,23 @@
   .prog .name{font-family:var(--mono);font-size:11px;color:var(--dim);min-width:120px}
   .prog .seqc{font-family:var(--disp);font-weight:600;font-size:14px}
 
+  /* ── Mimic ───────────────────────────────────────────────────────── */
+  .voices{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .vtog{
+    display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;
+    letter-spacing:.08em;color:var(--dim);border:1px solid var(--ridge-2);border-radius:4px;
+    padding:6px 10px;cursor:pointer;user-select:none;
+  }
+  .vtog:has(input:checked){color:var(--led);border-color:var(--led-dim)}
+  .vtog input{accent-color:var(--led)}
+  .mimic-strip{display:flex;flex-wrap:wrap;gap:3px}
+  .mbar{
+    font-family:var(--mono);font-size:10px;font-weight:600;min-width:38px;text-align:center;
+    padding:6px 4px;border-radius:3px;border:1px solid var(--ridge);
+    background:var(--well);color:var(--led);
+  }
+  .mbar.rest{color:var(--faint)}
+
   /* ── Layers ──────────────────────────────────────────────────────── */
   .bands{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
   @media(max-width:760px){.bands{grid-template-columns:repeat(4,1fr)}}
@@ -272,6 +289,7 @@
   <button role="tab" data-mod="library" aria-selected="true"><span class="dot"></span>LIBRARY</button>
   <button role="tab" data-mod="grid" aria-selected="false"><span class="dot"></span>GRID</button>
   <button role="tab" data-mod="keys" aria-selected="false"><span class="dot"></span>KEYS</button>
+  <button role="tab" data-mod="mimic" aria-selected="false"><span class="dot"></span>MIMIC</button>
   <button role="tab" data-mod="layers" aria-selected="false"><span class="dot"></span>LAYERS</button>
   <button role="tab" data-mod="viz" aria-selected="false"><span class="dot"></span>VIZ</button>
   <button role="tab" data-mod="brain" aria-selected="false"><span class="dot"></span>BRAIN</button>
@@ -324,6 +342,31 @@
     <div class="card">
       <h2>Progressions</h2>
       <div class="progs" id="progList"></div>
+    </div>
+  </section>
+
+  <!-- MIMIC -->
+  <section class="mod" id="mod-mimic">
+    <div class="mod-head"><h1>MIMIC</h1><p>The unit reads the selected track — chords, drums, bass, melody, energy — and re-performs it with its own hands. An instrumental near-dupe, not a copy.</p></div>
+    <div class="card">
+      <h2>Source → read → render</h2>
+      <div class="seq-ctl">
+        <button class="btn hot" id="mimicRead" disabled>READ SOURCE</button>
+        <button class="btn" id="mimicRender" disabled>RENDER DUPE</button>
+        <button class="btn sm" id="mimicMidi" disabled>EXPORT MIDI</button>
+        <span id="mimicStatus" style="font-family:var(--mono);font-size:11px;color:var(--dim)">Select a track in LIBRARY, then read it.</span>
+      </div>
+      <div class="voices" id="mimicVoices">
+        <label class="vtog"><input type="checkbox" data-voice="drums" checked>DRUMS</label>
+        <label class="vtog"><input type="checkbox" data-voice="bass" checked>BASS</label>
+        <label class="vtog"><input type="checkbox" data-voice="chords" checked>CHORDS</label>
+        <label class="vtog"><input type="checkbox" data-voice="lead" checked>LEAD</label>
+      </div>
+    </div>
+    <div class="card" id="mimicMapCard" hidden>
+      <h2>Structure read — one chip per bar, brightness = energy</h2>
+      <div class="mimic-strip" id="mimicStrip"></div>
+      <p style="color:var(--faint);font-size:12px;margin-top:10px;font-family:var(--mono)" id="mimicSummary"></p>
     </div>
   </section>
 
@@ -634,6 +677,8 @@ const player = {
     refreshKeys(); refreshLibrary();
     $('#seqFromTrack').disabled = false;
     $('#bandsBounce').disabled = false;
+    $('#mimicRead').disabled = false;
+    mimicReset();
   },
   play() {
     if (!this.buffer) { toast('Load a track in LIBRARY first'); return; }
@@ -732,7 +777,7 @@ function refreshLibrary() {
     const kill = el('button', 'kill', '✕');
     kill.setAttribute('aria-label', 'Remove ' + t.name);
     kill.onclick = () => {
-      if (player.track === t) { player.stop(); player.track = null; player.buffer = null; $('#npLine').textContent = 'NO SOURCE — load a track in LIBRARY'; setLcd(null, null); }
+      if (player.track === t) { player.stop(); player.track = null; player.buffer = null; $('#npLine').textContent = 'NO SOURCE — load a track in LIBRARY'; setLcd(null, null); $('#mimicRead').disabled = true; mimicReset(); }
       tracks.splice(tracks.indexOf(t), 1); DB.del(t.id); refreshLibrary(); refreshKeys();
     };
     li.append(play, mid, kill);
@@ -807,8 +852,8 @@ LANES.forEach((lane, li) => {
   lanesEl.appendChild(row);
 });
 
-function playVoice(id, t, vel) {
-  const ctx = AC, out = master;
+function playVoice(id, t, vel, ctxArg, outArg) {
+  const ctx = ctxArg || AC, out = outArg || master;
   const g = ctx.createGain(); g.connect(out);
   const v = vel * 0.9;
   if (id === 'kick') {
@@ -850,14 +895,16 @@ function playVoice(id, t, vel) {
     o.connect(g); o2.connect(g); o.start(t); o.stop(t + 0.1); o2.start(t); o2.stop(t + 0.1);
   }
 }
-let _noise = null;
+const _noiseByCtx = new WeakMap();
 function noiseBuf(ctx) {
-  if (_noise) return _noise;
-  _noise = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
-  const d = _noise.getChannelData(0);
+  let b = _noiseByCtx.get(ctx);
+  if (b) return b;
+  b = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+  const d = b.getChannelData(0);
   let seed = 22222;
   for (let i = 0; i < d.length; i++) { seed = (seed * 16807) % 2147483647; d[i] = (seed / 2147483647) * 2 - 1; }
-  return _noise;
+  _noiseByCtx.set(ctx, b);
+  return b;
 }
 const seq = { running:false, step:0, nextT:0, timer:null };
 function seqBpmVal(){ return +$('#seqBpm').value; }
@@ -1023,15 +1070,16 @@ function refreshKeys() {
   });
 }
 function midiOf(pc, oct) { return 12 * (oct + 1) + pc; }
-function tone(note, dur, when, vel) {
-  const t = when || AC.currentTime, v = vel || 0.22;
-  const o = AC.createOscillator(); o.type = 'triangle';
+function tone(note, dur, when, vel, ctxArg, outArg) {
+  const ctx = ctxArg || AC, out = outArg || master;
+  const t = when != null ? when : ctx.currentTime, v = vel || 0.22;
+  const o = ctx.createOscillator(); o.type = 'triangle';
   o.frequency.value = 440 * Math.pow(2, (note - 69) / 12);
-  const g = AC.createGain();
+  const g = ctx.createGain();
   g.gain.setValueAtTime(0.0001, t);
   g.gain.exponentialRampToValueAtTime(v, t + 0.015);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g); g.connect(master);
+  o.connect(g); g.connect(out);
   o.start(t); o.stop(t + dur + 0.05);
 }
 function playChord(pcs, when) {
@@ -1052,6 +1100,314 @@ function exportProgMidi(k, name, degSeq) {
   registerExport('MIDI', fn, new Blob([midiFile(evs, bpm)], { type: 'audio/midi' }));
   toast('Progression MIDI bounced → EXPORT');
 }
+
+/* ── MIMIC module: read structure, re-perform it ──────────────────── */
+let mimicData = null; // { trackId, bpm, key, nBars, barSec, chords[], intensity[], drums[{kick,snare,hat}[16]], lead[{bar,step8,midi}] }
+const MIMIC_MAX_BARS = 120;
+
+function mimicReset() {
+  mimicData = null;
+  $('#mimicRender').disabled = true;
+  $('#mimicMidi').disabled = true;
+  $('#mimicMapCard').hidden = true;
+  $('#mimicStatus').textContent = player.track
+    ? 'Source: "' + player.track.name + '" — read it to map the structure.'
+    : 'Select a track in LIBRARY, then read it.';
+}
+
+async function mimicAnalyze() {
+  const tr = player.track;
+  if (!tr || !tr.buffer) { toast('Load a track first'); return; }
+  ensureAC();
+  const buf = tr.buffer, sr = buf.sampleRate;
+  const mono = monoOf(buf);
+  const bpm = tr.bpm || detectBPM(mono, sr) || 120;
+  const key = tr.key || detectKey(mono, sr) || { root: 0, mode: 'major' };
+  const barSec = 60 / bpm * 4, stepSec = barSec / 16, eighthSec = barSec / 8;
+  const nBars = Math.max(1, Math.min((buf.duration / barSec) | 0, MIMIC_MAX_BARS));
+  const truncated = buf.duration / barSec > MIMIC_MAX_BARS;
+  const status = $('#mimicStatus');
+
+  const chords = [], intensity = [], drums = [], lead = [];
+  const diatonic = [0,1,2,3,4,5,6].map(d => chordTones(key, d));
+  const scalePcs = scaleOf(key);
+  const hann = new Float32Array(4096);
+  for (let i = 0; i < 4096; i++) hann[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / 4096);
+  const re = new Float32Array(4096), im = new Float32Array(4096);
+
+  // global RMS floor for rest detection
+  let globalRms = 0;
+  for (let i = 0; i < mono.length; i += 64) globalRms += mono[i] * mono[i];
+  globalRms = Math.sqrt(globalRms / (mono.length / 64));
+
+  for (let b = 0; b < nBars; b++) {
+    const barO = (b * barSec * sr) | 0;
+
+    // bar RMS → intensity
+    let rms = 0, cnt = 0;
+    for (let i = barO; i < barO + barSec * sr && i < mono.length; i += 32) { rms += mono[i] * mono[i]; cnt++; }
+    rms = Math.sqrt(rms / (cnt || 1));
+    intensity.push(rms);
+    const silent = rms < globalRms * 0.18;
+
+    // chord: chroma over 4 frames across the bar → best diatonic triad
+    if (silent) chords.push(null);
+    else {
+      const chroma = new Float32Array(12);
+      for (let f = 0; f < 4; f++) {
+        const o = barO + ((f + 0.25) * barSec / 4.5 * sr) | 0;
+        if (o + 4096 > mono.length) break;
+        for (let i = 0; i < 4096; i++) { re[i] = mono[o + i] * hann[i]; im[i] = 0; }
+        fft(re, im);
+        for (let bin = 2; bin < 2048; bin++) {
+          const freq = bin * sr / 4096;
+          if (freq < 60 || freq > 2500) continue;
+          const mag = Math.hypot(re[bin], im[bin]);
+          const pc = ((Math.round(12 * Math.log2(freq / 261.626)) % 12) + 12) % 12;
+          chroma[pc] += mag / Math.sqrt(freq); // tame treble bias
+        }
+      }
+      let bestS = -Infinity, bestD = 0;
+      diatonic.forEach((tones, d) => {
+        const s = chroma[tones[0]] * 1.2 + chroma[tones[1]] + chroma[tones[2]];
+        if (s > bestS) { bestS = s; bestD = d; }
+      });
+      chords.push(bestD);
+    }
+
+    // drums: per 16th, low (one-pole LP) / mid (residual) / high (first difference)
+    const lowE = new Float32Array(16), midE = new Float32Array(16), hiE = new Float32Array(16);
+    let lp = 0, prevV = 0;
+    for (let s = 0; s < 16; s++) {
+      const o = (barO + s * stepSec * sr) | 0, n = Math.min((stepSec * sr) | 0, 4096);
+      let le = 0, me = 0, he = 0;
+      for (let i = 0; i < n; i++) {
+        const v = mono[o + i] || 0;
+        lp += 0.10 * (v - lp);
+        le += lp * lp; me += (v - lp) * (v - lp);
+        const d = v - prevV; prevV = v; he += d * d;
+      }
+      lowE[s] = le; midE[s] = me; hiE[s] = he;
+    }
+    const gate = (arr, th) => { const m = Math.max(...arr) || 1; return [...arr].map(v => v > m * th); };
+    drums.push(silent
+      ? { kick: new Array(16).fill(false), snare: new Array(16).fill(false), hat: new Array(16).fill(false) }
+      : { kick: gate(lowE, 0.45), snare: gate(midE, 0.55), hat: gate(hiE, 0.40) });
+
+    // lead melody: autocorrelation pitch per 8th
+    if (!silent) {
+      for (let e8 = 0; e8 < 8; e8++) {
+        const o = (barO + (e8 + 0.15) * eighthSec * sr) | 0, W = 2048;
+        if (o + W * 2 > mono.length) break;
+        let energy = 0;
+        for (let i = 0; i < W; i++) energy += mono[o + i] * mono[o + i];
+        if (energy / W < globalRms * globalRms * 0.25) continue;
+        const minLag = (sr / 1000) | 0, maxLag = Math.min((sr / 80) | 0, W);
+        let bestC = 0, bestLag = 0;
+        for (let lag = minLag; lag < maxLag; lag++) {
+          let c = 0;
+          for (let i = 0; i < W; i += 2) c += mono[o + i] * mono[o + i + lag];
+          if (c > bestC) { bestC = c; bestLag = lag; }
+        }
+        if (bestLag && bestC / (energy / 2) > 0.55) {
+          const freq = sr / bestLag;
+          let midi = Math.round(69 + 12 * Math.log2(freq / 440));
+          while (midi < 55) midi += 12;
+          while (midi > 88) midi -= 12;
+          // snap to scale
+          let best = midi, bd = 99;
+          for (let cand = midi - 2; cand <= midi + 2; cand++) {
+            if (scalePcs.includes(((cand % 12) + 12) % 12) && Math.abs(cand - midi) < bd) { bd = Math.abs(cand - midi); best = cand; }
+          }
+          lead.push({ bar: b, e8, midi: best });
+        }
+      }
+    }
+
+    if (b % 8 === 7) { status.textContent = 'Reading… bar ' + (b + 1) + '/' + nBars; await new Promise(r => setTimeout(r, 0)); }
+  }
+
+  // normalize intensity 0..1
+  const mx = Math.max(...intensity) || 1;
+  const inten = intensity.map(v => v / mx);
+  // drop lead if too sparse to be believed
+  const leadOk = lead.length >= nBars;
+  mimicData = { trackId: tr.id, name: tr.name, bpm, key, nBars, barSec, chords, intensity: inten, drums, lead: leadOk ? lead : [], truncated };
+
+  // strip
+  const strip = $('#mimicStrip'); strip.innerHTML = '';
+  const romans = key.mode === 'major' ? ROMAN_MAJ : ROMAN_MIN;
+  chords.forEach((d, b) => {
+    const chip = el('span', 'mbar' + (d == null ? ' rest' : ''), d == null ? '·' : esc(NOTE_NAMES[diatonic[d][0]] + ((key.mode === 'major' ? MAJ_QUAL : MIN_QUAL)[d] === 'min' ? 'm' : (key.mode === 'major' ? MAJ_QUAL : MIN_QUAL)[d] === 'dim' ? '°' : '')));
+    chip.style.opacity = 0.35 + 0.65 * inten[b];
+    chip.title = 'bar ' + (b + 1) + (d == null ? ' — rest' : ' — ' + romans[d]);
+    strip.appendChild(chip);
+  });
+  const drumDensity = drums.reduce((a, d) => a + d.kick.filter(Boolean).length + d.snare.filter(Boolean).length, 0) / (nBars * 32);
+  $('#mimicSummary').textContent =
+    nBars + ' bars · ' + bpm + ' BPM · ' + keyName(key) + ' · ' +
+    (leadOk ? lead.length + ' lead notes traced' : 'lead too uncertain — disabled') +
+    ' · drum density ' + Math.round(drumDensity * 100) + '%' +
+    (truncated ? ' · long track: first ' + MIMIC_MAX_BARS + ' bars' : '');
+  $('#mimicMapCard').hidden = false;
+  $('#mimicRender').disabled = false;
+  $('#mimicMidi').disabled = false;
+  if (!leadOk) $('#mimicVoices input[data-voice="lead"]').checked = false;
+  status.textContent = 'Structure read. Render the dupe or export MIDI.';
+}
+
+function mimicVoicesOn() {
+  const on = {};
+  $$('#mimicVoices input').forEach(i => on[i.dataset.voice] = i.checked);
+  return on;
+}
+function padChord(ctx, out, pcs, t, dur, vel) {
+  const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = 1100;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(vel, t + Math.min(0.08, dur * 0.2));
+  g.gain.setValueAtTime(vel, t + dur * 0.7);
+  g.gain.linearRampToValueAtTime(0.0001, t + dur);
+  lpf.connect(g); g.connect(out);
+  pcs.forEach((pc, i) => {
+    const midi = midiOf(pc, i === 0 ? 3 : 4);
+    [-4, 4].forEach(cents => {
+      const o = ctx.createOscillator(); o.type = 'sawtooth';
+      o.frequency.value = 440 * Math.pow(2, (midi - 69) / 12);
+      o.detune.value = cents;
+      o.connect(lpf); o.start(t); o.stop(t + dur + 0.05);
+    });
+  });
+}
+function bassNote(ctx, out, midi, t, dur, vel) {
+  const o = ctx.createOscillator(); o.type = 'triangle';
+  o.frequency.value = 440 * Math.pow(2, (midi - 69) / 12);
+  const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass'; lpf.frequency.value = 380;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vel, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(lpf); lpf.connect(g); g.connect(out);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+async function mimicRender() {
+  const M = mimicData;
+  if (!M) return;
+  if (!player.track || player.track.id !== M.trackId) { toast('Source changed — read it again'); return; }
+  const on = mimicVoicesOn();
+  if (!on.drums && !on.bass && !on.chords && !on.lead) { toast('Enable at least one voice'); return; }
+  $('#mimicStatus').textContent = 'Rendering dupe…';
+  $('#mimicRender').disabled = true;
+  await new Promise(r => setTimeout(r, 30));
+  try {
+    const sr = 44100, total = M.nBars * M.barSec + 1.2;
+    const off = new OfflineAudioContext(2, Math.ceil(total * sr), sr);
+    const comp = off.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.ratio.value = 3;
+    const out = off.createGain(); out.gain.value = 0.85;
+    out.connect(comp); comp.connect(off.destination);
+    const stepSec = M.barSec / 16, e8Sec = M.barSec / 8;
+    const diatonic = [0,1,2,3,4,5,6].map(d => chordTones(M.key, d));
+
+    for (let b = 0; b < M.nBars; b++) {
+      const t0 = b * M.barSec;
+      const inten = 0.35 + 0.65 * M.intensity[b];
+      const quiet = M.intensity[b] < 0.12;
+      const d = M.chords[b];
+
+      if (on.drums && !quiet) {
+        const dr = M.drums[b];
+        for (let s = 0; s < 16; s++) {
+          const t = t0 + s * stepSec;
+          if (dr.kick[s]) playVoice('kick', t, inten, off, out);
+          if (dr.snare[s]) playVoice('snare', t, inten * 0.9, off, out);
+          if (dr.hat[s]) playVoice('chat', t, inten * 0.7, off, out);
+        }
+      }
+      if (d != null) {
+        const tones = diatonic[d];
+        if (on.chords) padChord(off, out, tones, t0, M.barSec, 0.07 * inten);
+        if (on.bass) {
+          const rootMidi = midiOf(tones[0], 2);
+          const kicks = M.drums[b].kick.map((v, s) => v ? s : -1).filter(s => s >= 0);
+          const hits = kicks.length ? kicks : [0, 8];
+          hits.forEach(s => bassNote(off, out, rootMidi, t0 + s * stepSec, stepSec * 2.6, 0.34 * inten));
+        }
+      }
+      if (on.lead) {
+        M.lead.filter(n => n.bar === b).forEach(n =>
+          tone(n.midi, e8Sec * 0.9, t0 + n.e8 * e8Sec, 0.12 * inten, off, out));
+      }
+    }
+    const rendered = await off.startRendering();
+    const ab = wavBytes(rendered);
+    const fname = (M.name + '-mimic').toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.wav';
+    registerExport('WAV', fname, new Blob([ab.slice(0)], { type: 'audio/wav' }));
+    // drop the dupe into the library for instant A/B
+    const dupe = {
+      id: 'tr' + Date.now() + 'm',
+      name: M.name + ' (mimic)',
+      bytes: ab, buffer: rendered, dur: rendered.duration,
+      bpm: M.bpm, key: M.key, peaks: Array.from(peaksOf(rendered, 160)),
+    };
+    tracks.push(dupe);
+    DB.put({ id: dupe.id, name: dupe.name, bytes: dupe.bytes, bpm: dupe.bpm, key: dupe.key, dur: dupe.dur, peaks: dupe.peaks });
+    refreshLibrary();
+    $('#mimicStatus').textContent = 'Dupe rendered — in LIBRARY for A/B, and in EXPORT.';
+    toast('Near-dupe rendered → LIBRARY + EXPORT');
+  } catch (e) {
+    $('#mimicStatus').textContent = 'Render failed — ' + (e && e.message || 'unknown error');
+  }
+  $('#mimicRender').disabled = false;
+}
+function mimicExportMidi() {
+  const M = mimicData;
+  if (!M) return;
+  const on = mimicVoicesOn();
+  const TPQ = 96, barT = TPQ * 4, stepT = TPQ / 4, e8T = TPQ / 2;
+  const evs = [];
+  const diatonic = [0,1,2,3,4,5,6].map(d => chordTones(M.key, d));
+  for (let b = 0; b < M.nBars; b++) {
+    const bt = b * barT, d = M.chords[b];
+    if (on.drums && M.intensity[b] >= 0.12) {
+      const dr = M.drums[b];
+      for (let s = 0; s < 16; s++) {
+        const push = note => { evs.push({ tick: bt + s * stepT, on: true, note, vel: 100, ch: 9 }); evs.push({ tick: bt + s * stepT + stepT / 2, on: false, note, ch: 9 }); };
+        if (dr.kick[s]) push(36);
+        if (dr.snare[s]) push(38);
+        if (dr.hat[s]) push(42);
+      }
+    }
+    if (d != null) {
+      const tones = diatonic[d];
+      if (on.chords) tones.forEach((pc, i) => {
+        const note = midiOf(pc, i === 0 ? 3 : 4);
+        evs.push({ tick: bt, on: true, note, vel: 80, ch: 1 });
+        evs.push({ tick: bt + barT - 4, on: false, note, ch: 1 });
+      });
+      if (on.bass) {
+        const root = midiOf(tones[0], 2);
+        const kicks = M.drums[b].kick.map((v, s) => v ? s : -1).filter(s => s >= 0);
+        (kicks.length ? kicks : [0, 8]).forEach(s => {
+          evs.push({ tick: bt + s * stepT, on: true, note: root, vel: 95, ch: 0 });
+          evs.push({ tick: bt + s * stepT + stepT * 2, on: false, note: root, ch: 0 });
+        });
+      }
+    }
+    if (on.lead) M.lead.filter(n => n.bar === b).forEach(n => {
+      evs.push({ tick: bt + n.e8 * e8T, on: true, note: n.midi, vel: 85, ch: 2 });
+      evs.push({ tick: bt + n.e8 * e8T + e8T - 4, on: false, note: n.midi, ch: 2 });
+    });
+  }
+  if (!evs.length) { toast('Nothing to export — enable a voice'); return; }
+  evs.sort((a, b) => a.tick - b.tick || (a.on === b.on ? 0 : a.on ? 1 : -1));
+  const fname = (M.name + '-mimic').toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.mid';
+  registerExport('MIDI', fname, new Blob([midiFile(evs, M.bpm)], { type: 'audio/midi' }));
+  toast('Mimic MIDI bounced → EXPORT (bass ch1, chords ch2, lead ch3, drums ch10)');
+}
+$('#mimicRead').onclick = mimicAnalyze;
+$('#mimicRender').onclick = mimicRender;
+$('#mimicMidi').onclick = mimicExportMidi;
 
 /* ── LAYERS module ────────────────────────────────────────────────── */
 const bandsEl = $('#bands');
