@@ -381,7 +381,7 @@
     <div class="card">
       <ul class="exports" id="expList"></ul>
       <p class="empty" id="expEmpty">Nothing bounced yet. GRID and KEYS export MIDI; LAYERS bounces WAV; VIZ records clips.</p>
-      <p style="color:var(--faint);font-size:12px;margin-top:10px;font-family:var(--mono)">Note: some embedded viewers block file downloads — audio previews always work; run BEAT BRAIN from its own tab or the repo for full saves.</p>
+      <p style="color:var(--faint);font-size:12px;margin-top:10px;font-family:var(--mono)">Note: the embedded Claude viewer can save clips but not .wav/.mid — audio previews always work; run BEAT BRAIN from the repo or a deployed tab for full saves.</p>
     </div>
   </section>
 </main>
@@ -1254,6 +1254,27 @@ refreshBrain();
 
 /* ── EXPORT hub ───────────────────────────────────────────────────── */
 const exportsReg = [];
+async function saveBlob(filename, blob) {
+  // Claude artifact viewer: files save through the downloads capability
+  let dl = null;
+  try { if (typeof claude !== 'undefined' && claude.use) dl = await claude.use('downloads'); } catch {}
+  if (dl) {
+    try { await dl.save({ filename, data: blob }); toast('Saved ' + filename); }
+    catch (e) {
+      const code = e && e.code;
+      if (code === 'declined') return;
+      if (code === 'rejected_extension' || code === 'extension_not_enabled')
+        toast('This viewer can’t save that file type — run BEAT BRAIN from the repo or a deployed tab for full exports');
+      else if (code === 'rate_limited') toast('One save at a time — try again in a moment');
+      else toast('Save unavailable here — audio previews still work');
+    }
+    return;
+  }
+  // plain browser: direct download
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+}
 function registerExport(kind, filename, blob) {
   exportsReg.push({ kind, filename, blob, ts: Date.now() });
   refreshExports();
@@ -1272,12 +1293,7 @@ function refreshExports() {
       li.appendChild(au);
     }
     const dl = el('button', 'btn sm', 'SAVE');
-    dl.onclick = () => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(x.blob); a.download = x.filename;
-      document.body.appendChild(a); a.click(); a.remove();
-      toast('If nothing saved, this viewer blocks downloads — run BEAT BRAIN from its own tab');
-    };
+    dl.onclick = () => saveBlob(x.filename, x.blob);
     li.appendChild(dl);
     ul.appendChild(li);
   });
