@@ -8,6 +8,16 @@
 [goreportcard.com](https://goreportcard.com/report/github.com/go-music-theory/music-theory) |
 [Coverage](https://app.codecov.io/github/go-music-theory/music-theory)
 
+## BEAT BRAIN
+
+The flagship studio unit lives in [`beatbrain/`](beatbrain/) — a self-contained
+browser studio consolidating the best of sound.WAV (wavPRO) and Mimic Media
+Maker: library analysis (BPM/key), step sequencer with MIDI export, harmonic
+blueprint, 7-band layer isolation, visualizer, and a production brain. Open
+`beatbrain/index.html` in a browser; no build step. See
+[`beatbrain/CONSOLIDATION.md`](beatbrain/CONSOLIDATION.md) for the full map of
+what was absorbed, cut, and kept as sister apps.
+
 ## Music theory models in Go
 
 There's an example command-line utility `music-theory.go` to demo the libraries, with a `bin/` wrapper.
